@@ -18,6 +18,7 @@ def fetch_page(url):
         )
 
         response.raise_for_status()
+        response.encoding = response.apparent_encoding
 
         return response.text
 
