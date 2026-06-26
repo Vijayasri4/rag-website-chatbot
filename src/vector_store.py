@@ -1,134 +1,69 @@
-import uuid
-import chromadb
+"""
+vector_store.py
+---------------
+In-memory vector store.
+Wraps Embedder + chunk list into a single persistent object
+stored in Streamlit session_state.
+"""
+import pickle
+import os
+from pathlib import Path
 
-client = chromadb.PersistentClient(
-    path="data/chroma"
-)
-
-collection = client.get_or_create_collection(
-    name="website_data"
-)
-
-
-def clear_url_data(url):
-    results = collection.get(
-        where={"url": url}
-    )
-    if results["ids"]:
-        collection.delete(ids=results["ids"])
-        print(f"Cleared old data for: {url}")
+from src.embedder import Embedder
 
 
-def save_embeddings(embedded_chunks, refresh=False):
+class VectorStore:
+    """
+    Stores chunks and their TF-IDF embeddings.
+    Can be serialised to disk for persistence across Streamlit reruns.
+    """
 
-    urls_in_batch = set(
-        chunk["url"] for chunk in embedded_chunks
-    )
+    def __init__(self):
+        self.chunks:   list[dict]  = []   # [{text, url, chunk_id}, ...]
+        self.embedder: Embedder    = Embedder()
+        self.source_url: str       = ""
+        self.pages_scraped: int    = 0
+        self._indexed = False
 
-    if refresh:
-        for url in urls_in_batch:
-            clear_url_data(url)
+    # ── Build index ───────────────────────────────────────────────────────────
+    def build(self, chunks: list[dict], source_url: str, pages: int) -> None:
+        """Index a list of chunk dicts."""
+        self.chunks      = chunks
+        self.source_url  = source_url
+        self.pages_scraped = pages
+        texts = [c["text"] for c in chunks]
+        self.embedder.fit(texts)
+        self._indexed = True
 
-    for chunk in embedded_chunks:
-        collection.add(
-            ids=[str(uuid.uuid4())],
-            documents=[chunk["text"]],
-            embeddings=[chunk["embedding"].tolist()],
-            metadatas=[{"url": chunk["url"]}]
-        )
+    # ── Query ─────────────────────────────────────────────────────────────────
+    def search(self, query: str, top_k: int = 5) -> list[dict]:
+        if not self._indexed:
+            raise RuntimeError("VectorStore is empty. Call build() first.")
+        return self.embedder.top_k(query, self.chunks, k=top_k)
 
-    print(f"Saved {len(embedded_chunks)} chunks successfully.")
+    @property
+    def is_ready(self) -> bool:
+        return self._indexed
 
+    @property
+    def stats(self) -> dict:
+        return {
+            "chunks":        len(self.chunks),
+            "pages_scraped": self.pages_scraped,
+            "source_url":    self.source_url,
+        }
 
-def is_url_stored(base_url):
-    results = collection.get(
-        where={"url": base_url},
-        limit=1
-    )
-    return len(results["ids"]) > 0
+    # ── Persistence ───────────────────────────────────────────────────────────
+    def save(self, path: str = "data/vector_store.pkl") -> None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
 
+    @classmethod
+    def load(cls, path: str = "data/vector_store.pkl") -> "VectorStore":
+        with open(path, "rb") as f:
+            return pickle.load(f)
 
-if __name__ == "__main__":
-
-    from scraper import recursive_crawler
-    from chunker import create_chunks
-    from embedder import create_embeddings
-
-    start_url = input("Enter website URL: ").strip()
-
-    if not start_url:
-        print("Please enter a valid URL.")
-        exit()
-
-    # Check if URL already exists in DB
-    already_exists = is_url_stored(start_url)
-
-    if already_exists:
-        print(f"\nThis URL already exists in the database!")
-        print("Options:")
-        print("  1. skip    - Use existing data (faster)")
-        print("  2. refresh - Delete old data and re-scrape")
-        print("  3. exit    - Cancel and exit")
-
-        choice = input(
-            "\nEnter your choice (skip/refresh/exit): "
-        ).strip().lower()
-
-        if choice == "skip":
-            print("\nUsing existing data from database.")
-            print("You can now run the chatbot!")
-            exit()
-
-        elif choice == "refresh":
-            print("\nRe-scraping website and updating database...")
-
-            pages = recursive_crawler(
-                start_url,
-                max_depth=2,
-                max_pages=20
-            )
-
-            if not pages:
-                print("No pages scraped. Check the URL and try again.")
-                exit()
-
-            chunks = create_chunks(pages)
-            embedded_chunks = create_embeddings(chunks)
-
-            if not embedded_chunks:
-                print("No embeddings created.")
-                exit()
-
-            save_embeddings(embedded_chunks, refresh=True)
-
-        elif choice == "exit":
-            print("Exiting. Goodbye!")
-            exit()
-
-        else:
-            print("Invalid choice. Exiting.")
-            exit()
-
-    else:
-        # Fresh URL - scrape and save directly
-        print(f"\nNew URL detected. Starting scraping...")
-
-        pages = recursive_crawler(
-            start_url,
-            max_depth=1,
-            max_pages=5
-        )
-
-        if not pages:
-            print("No pages scraped. Check the URL and try again.")
-            exit()
-
-        chunks = create_chunks(pages)
-        embedded_chunks = create_embeddings(chunks)
-
-        if not embedded_chunks:
-            print("No embeddings created.")
-            exit()
-
-        save_embeddings(embedded_chunks, refresh=False)
-        print("\nDone! You can now run the chatbot.")
+    @staticmethod
+    def exists(path: str = "data/vector_store.pkl") -> bool:
+        return os.path.exists(path)

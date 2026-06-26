@@ -1,79 +1,64 @@
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+"""
+chunker.py
+----------
+Splits raw page text into token-bounded chunks with overlap.
+Uses tiktoken (cl100k_base) for accurate token counts.
+
+Tuning for better RAG quality:
+  MAX_TOKENS = 200  (smaller chunks = more precise retrieval)
+  OVERLAP    = 40   (overlap preserves context at chunk boundaries)
+"""
+import hashlib
+import tiktoken
+
+_ENC = tiktoken.get_encoding("cl100k_base")
+
+MAX_TOKENS = 200   # smaller = more precise semantic match
+OVERLAP    = 40    # overlap to avoid cutting sentences mid-thought
 
 
-def create_chunks(
-
-    pages,
-
-    chunk_size=500,
-
-    chunk_overlap=100
-
-):
-
-    splitter = RecursiveCharacterTextSplitter(
-
-        chunk_size=chunk_size,
-
-        chunk_overlap=chunk_overlap
-
-    )
-
+def chunk_text(text: str,
+               max_tokens: int = MAX_TOKENS,
+               overlap: int = OVERLAP) -> list[str]:
+    """Split a single text into overlapping token-bounded chunks."""
+    tokens = _ENC.encode(text)
     chunks = []
+    start  = 0
 
-    for page in pages:
-
-        page_chunks = splitter.split_text(
-
-            page["text"]
-
-        )
-
-        for chunk in page_chunks:
-
-            chunks.append(
-
-                {
-
-                    "url": page["url"],
-
-                    "text": chunk
-
-                }
-
-            )
+    while start < len(tokens):
+        end   = min(start + max_tokens, len(tokens))
+        chunk = _ENC.decode(tokens[start:end])
+        if chunk.strip():
+            chunks.append(chunk.strip())
+        if end == len(tokens):
+            break
+        start += max_tokens - overlap
 
     return chunks
 
-if __name__ == "__main__":
 
-    from scraper import recursive_crawler
+def chunk_documents(docs: list[tuple[str, str]]) -> list[dict]:
+    """
+    Chunk all scraped documents and deduplicate.
 
-    start_url = input("Enter website URL: ").strip()
+    Args:
+        docs: list of (page_url, page_text)
 
-    pages = recursive_crawler(
-        start_url,
-        max_depth=1,
-        max_pages=5
-    )
+    Returns:
+        List of dicts: { 'text': str, 'url': str, 'chunk_id': str }
+    """
+    seen:   set[str]  = set()
+    result: list[dict] = []
 
-    chunks = create_chunks(pages)
+    for url, text in docs:
+        for chunk in chunk_text(text):
+            h = hashlib.md5(chunk.encode()).hexdigest()
+            if h not in seen:
+                seen.add(h)
+                result.append({
+                    "text":     chunk,
+                    "url":      url,
+                    "chunk_id": h,
+                })
 
-    print(f"\nTotal chunks: {len(chunks)}\n")
-
-    if not chunks:
-        print("No chunks were created. Please check the URL and try again.")
-    else:
-        for i, chunk in enumerate(chunks[:3], start=1):
-
-            print(f"Chunk {i}")
-
-            print(f"Source: {chunk['url']}")
-
-            print(f"Length: {len(chunk['text'])}")
-
-            print(chunk["text"][:250])
-
-            print("\n-----------------\n")
-
-    
+    return result
