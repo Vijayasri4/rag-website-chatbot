@@ -1,72 +1,48 @@
-"""
-llm.py
-------
-Groq LLM client with improved RAG prompt.
-"""
 import os
 from groq import Groq
 from dotenv import load_dotenv
-
 load_dotenv()
 
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 MAX_TOKENS    = 1024
-TEMPERATURE   = 0.0   # fully deterministic for factual Q&A
+TEMPERATURE   = 0.0
 
+def _client():
+    key = os.getenv("GROQ_API_KEY")
+    if not key: raise ValueError("GROQ_API_KEY not set in .env")
+    return Groq(api_key=key)
 
-def _get_client() -> Groq:
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise ValueError("GROQ_API_KEY not found. Set it in your .env file.")
-    return Groq(api_key=api_key)
+SYSTEM = """You are a helpful assistant that answers questions using ONLY the website content provided.
+RULES:
+- Answer ONLY from the context chunks. Never use outside knowledge.
+- If the answer is clearly in the chunks, answer directly and confidently.
+- If not found, say: "This information is not available on the scraped website."
+- Be concise and factual. No disclaimers."""
 
-
-SYSTEM_PROMPT = """You are a helpful assistant that answers questions using ONLY \
-the provided website content chunks below. 
-
-STRICT RULES:
-- Use ONLY the information present in the chunks. Never use external knowledge.
-- If the chunks contain the answer, give a clear direct answer immediately.
-- Do NOT say "I couldn't find" if the answer IS in the chunks.
-- Do NOT add disclaimers like "based on the context" — just answer directly.
-- If truly not in the chunks, say: "This information is not available on the scraped website."
-- Keep answers concise and factual."""
-
-
-def build_prompt(question: str, context: str) -> str:
-    return f"""WEBSITE CONTENT CHUNKS:
+def build_prompt(question, context, history=None):
+    history_text = ""
+    if history:
+        history_text = "\n\nCONVERSATION SO FAR:\n"
+        for m in history:
+            role = "User" if m.get("role") == "user" else "Assistant"
+            history_text += f"{role}: {m.get('content','')}\n"
+    return f"""WEBSITE CONTENT:
 {context}
+{history_text}
+CURRENT QUESTION: {question}
 
-QUESTION: {question}
+Answer directly using only the website content above:"""
 
-Answer directly and concisely using only the chunks above:"""
-
-
-def ask_groq(
-    question: str,
-    context:  str,
-    model:    str  = DEFAULT_MODEL,
-    stream:   bool = False,
-):
-    client   = _get_client()
-    prompt   = build_prompt(question, context)
-    response = client.chat.completions.create(
-        model       = model,
-        max_tokens  = MAX_TOKENS,
-        temperature = TEMPERATURE,
-        stream      = stream,
-        messages    = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": prompt},
-        ],
+def ask_groq(question, context, model=DEFAULT_MODEL, stream=False, history=None):
+    prompt = build_prompt(question, context, history)
+    resp = _client().chat.completions.create(
+        model=model, max_tokens=MAX_TOKENS, temperature=TEMPERATURE, stream=stream,
+        messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}]
     )
-
     if stream:
         def _gen():
-            for chunk in response:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    yield delta
+            for chunk in resp:
+                d = chunk.choices[0].delta.content
+                if d: yield d
         return _gen()
-
-    return response.choices[0].message.content.strip()
+    return resp.choices[0].message.content.strip()

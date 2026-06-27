@@ -211,4 +211,3 @@ def crawl_sync(seed_url: str, max_pages: int = 20,
                progress_callback=None) -> list[tuple[str, str]]:
     """Synchronous wrapper for Streamlit."""
     return asyncio.run(crawl(seed_url, max_pages, progress_callback))
-
