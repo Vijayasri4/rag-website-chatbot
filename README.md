@@ -1,5 +1,7 @@
 # 🤖 RAG Website Chatbot
 
+YOUTUBE VIDEO LINK: https://youtu.be/jvlk7vhArbQ?si=F34-5Y6-pJQGlG1j
+
 An AI-powered chatbot that scrapes any website and answers questions based **only** on the scraped content. Built with **Python**, **Streamlit**, and **Groq LLM** using the **RAG (Retrieval-Augmented Generation)** technique.
 
 ---
